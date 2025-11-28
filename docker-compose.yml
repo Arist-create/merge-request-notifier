@@ -5,9 +5,6 @@ services:
     build: .
     container_name: merge-monitor
     restart: unless-stopped
-    volumes:
-      - ./merge_monitor.log:/app/merge_monitor.log
-      - ./.env:/app/.env
     env_file:
       - .env
     environment:

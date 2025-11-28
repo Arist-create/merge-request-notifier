@@ -1,6 +1,6 @@
 # GitLab MR Monitor
 
-Dockerized Python application for monitoring GitLab Merge Requests, updating Jira statuses(only to Waiting Merge) and sending notifications to Pachca.
+Dockerized Python application for monitoring GitLab Merge Requests and sending notifications to Pachca.
 
 ## Configuration
 

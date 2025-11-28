@@ -1,5 +1,5 @@
-import requests, time, urllib3, re, logging, signal, sys, os
-from datetime import datetime
+import requests, time, urllib3, re, logging, signal, sys, os, json
+from datetime import datetime, timedelta
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', 
@@ -32,20 +32,23 @@ def send_pacha_message(text):
 def get_open_mrs():
     try:
         logger.info("Получение списка открытых MR")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/123/merge_requests?state=opened&author_username=aleksey.kuryshev", 
+        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/merge_requests?state=opened&author_username=aleksey.kuryshev", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         project_mrs = r.json()
         logger.info(f"Найдено {len(project_mrs)} MR")
+        # Сохраняем project_id для каждого MR
+        for mr in project_mrs:
+            mr['_project_id'] = mr.get('project_id', 123)  # Fallback к 123 если нет project_id
         return project_mrs
     except Exception as e:
         logger.error(f"Ошибка при получении списка MR: {e}")
         raise
 
-def get_approval_count(mr_iid):
+def get_approval_count(mr_iid, project_id):
     try:
         logger.info(f"Получение количества аппрувов для MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/123/merge_requests/{mr_iid}/approvals", 
+        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/approvals", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         time.sleep(1)
@@ -56,10 +59,10 @@ def get_approval_count(mr_iid):
         logger.error(f"Ошибка при получении аппрувов для MR !{mr_iid}: {e}")
         raise
 
-def get_mr_details(mr_iid):
+def get_mr_details(mr_iid, project_id):
     try:
         logger.info(f"Получение деталей MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/123/merge_requests/{mr_iid}", 
+        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         time.sleep(1)
@@ -68,10 +71,10 @@ def get_mr_details(mr_iid):
         logger.error(f"Ошибка при получении деталей MR !{mr_iid}: {e}")
         raise
 
-def get_mr_comments(mr_iid):
+def get_mr_comments(mr_iid, project_id):
     try:
         logger.info(f"Получение комментариев для MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/123/merge_requests/{mr_iid}/notes?sort=desc", 
+        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/notes?sort=desc", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         time.sleep(1)
@@ -90,33 +93,48 @@ def extract_jira_key_from_text(text):
         logger.error(f"Ошибка при поиске ключа Jira в тексте: {e}")
         return None
 
-def update_jira_status(jira_key):
+# Глобальный словарь для хранения напоминаний (в памяти)
+sent_reminders = {}
+
+def should_send_reminder(mr_key, created_at):
     try:
-        logger.info(f"Попытка обновления статуса задачи {jira_key} на 'Need Testing'")
-        headers = {"Authorization": f"Bearer {JIRA_TOKEN}", "Content-Type": "application/json"}
-        transitions_resp = requests.get(f"{JIRA_URL}/rest/api/2/issue/{jira_key}/transitions", headers=headers, verify=False)
-        transitions_resp.raise_for_status()
-        transitions = transitions_resp.json().get("transitions", [])
-        logger.info(f"Доступные переходы для задачи {jira_key}: {[t.get('to', {}).get('name') for t in transitions]}")
+        now = datetime.now()
         
-        target_transition = next((t for t in transitions if "Need Testing" in t.get("to", {}).get("name", "")), None)
-        if not target_transition:
-            logger.error(f"Не найден переход для статуса 'Need Testing' в задаче {jira_key}")
+        # Парсим дату создания MR с учетом разных форматов
+        try:
+            mr_created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            try:
+                mr_created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f%z")
+                # Убираем timezone, оставляем только время
+                mr_created = mr_created.replace(tzinfo=None)
+            except ValueError:
+                logger.error(f"Неизвестный формат даты: {created_at}")
+                return False
+        
+        # Проверяем что прошло больше 24 часов
+        if now - mr_created < timedelta(hours=24):
             return False
-        
-        resp = requests.post(f"{JIRA_URL}/rest/api/2/issue/{jira_key}/transitions", 
-                           json={"transition": {"id": target_transition["id"], "fields": {"customfield_27059": "."}}}, 
-                           headers=headers, verify=False)
-        resp.raise_for_status()
-        logger.info(f"Статус задачи {jira_key} успешно обновлен на 'Need Testing'")
+            
+        # Проверяем было ли напоминание за последние 24 часа
+        last_reminder = sent_reminders.get(mr_key)
+        if last_reminder:
+            if now - last_reminder < timedelta(hours=24):
+                return False
+                
         return True
     except Exception as e:
-        logger.error(f"Ошибка при обновлении статуса Jira {jira_key}: {e}")
+        logger.error(f"Ошибка при проверке напоминания для MR {mr_key}: {e}")
         return False
+
+def mark_reminder_sent(mr_key):
+    sent_reminders[mr_key] = datetime.now()
+
 
 def main():
     monitored, reported_mrs, shutdown_requested = {}, set(), False
     tracked_comments = {}
+    mr_project_ids = {}  # Словарь для хранения project_id по MR iid
 
     def signal_handler(signum, frame):
         nonlocal shutdown_requested
@@ -145,12 +163,17 @@ def main():
             for mr in open_mrs:
                 iid = mr["iid"]
                 title = mr["title"]
+                project_id = mr['_project_id']
                 mr_key = f"{iid}"
+                
+                # Сохраняем project_id для MR
+                mr_project_ids[mr_key] = project_id
+                
                 if mr_key not in monitored:
                     monitored[mr_key] = 0
                     tracked_comments[mr_key] = set()
                     new_mrs.append(f"!{iid}: {title}")
-                    logger.info(f"Новый MR !{iid} ({title}) добавлен в мониторинг")
+                    logger.info(f"Новый MR !{iid} ({title}) добавлен в мониторинг, project_id: {project_id}")
 
             if new_mrs:
                 new_mrs_text = "\n".join([f"🆕 {mr}" for mr in new_mrs])
@@ -161,14 +184,18 @@ def main():
             logger.info(f"Проверка {len(monitored)} MR на аппрувы и комментарии")
             for mr_key in list(monitored.keys()):
                 iid = int(mr_key)
-                approvals = get_approval_count(iid)
-                mr_details = get_mr_details(iid)
+                project_id = mr_project_ids.get(mr_key)  # Используем сохраненный project_id
+                approvals = get_approval_count(iid, project_id)
+                mr_details = get_mr_details(iid, project_id)
                 title = mr_details["title"]
                 print(f"MR !{iid} ({title}): {approvals} аппрувов")
+                
+                # Находим текущий MR в списке open_mrs
+                current_mr = next((m for m in open_mrs if m["iid"] == iid), None)
 
                 # Проверка новых комментариев
                 try:
-                    comments = get_mr_comments(iid)
+                    comments = get_mr_comments(iid, project_id)
                     current_comment_ids = {str(comment["id"]) for comment in comments}
                     new_comment_ids = current_comment_ids - tracked_comments.get(mr_key, set())
                     
@@ -206,31 +233,55 @@ def main():
                     logger.info(f"MR !{iid} ({title}) больше не открыт, удален из мониторинга")
                     monitored.pop(mr_key, None)
                     tracked_comments.pop(mr_key, None)
+                    mr_project_ids.pop(mr_key, None)  # Удаляем и project_id
                     continue
 
                 if approvals >= TARGET_APPROVALS and mr_key not in reported_mrs:
                     logger.info(f"MR !{iid} ({title}) достиг {approvals} аппрувов, обработка уведомления")
                     
-                    mr_details = get_mr_details(iid)
-                    jira_key = extract_jira_key_from_text(mr_details.get("title", "") + " " + mr_details.get("description", ""))
+                    mr_details = get_mr_details(iid, project_id)
+                    jira_key = extract_jira_key_from_text((mr_details.get("title", "") or "") + " " + (mr_details.get("description", "") or ""))
                     
-                    jira_updated = False
-                    if jira_key:
-                        logger.info(f"Найден ключ Jira {jira_key}, попытка обновления статуса")
-                        try:
-                            jira_updated = update_jira_status(jira_key)
-                        except Exception as jira_error:
-                            logger.error(f"Критическая ошибка при обновлении статуса Jira {jira_key}: {jira_error}")
-                    else:
-                        logger.warning(f"Не найден ключ Jira для MR !{iid} ({title})")
-                    
-                    jira_info = f" (Jira {jira_key} обновлен)" if jira_updated else ""
                     jira_link = f"\nЗадача: {JIRA_URL}/browse/{jira_key}" if jira_key else ""
-                    mr_link = f"\nMR: {mr_details.get('web_url', '')}"
-                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_info}{jira_link}{mr_link}"
+                    mr_link = f"\nMR: {mr_details.get('web_url', '')}" if mr_details.get('web_url') else ""
+                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_link}{mr_link}"
                     logger.info(f"Отправка уведомления о достижении целевых аппрувов: {message}")
                     send_pacha_message(message)
                     reported_mrs.add(mr_key)
+
+                # Проверка на напоминание о старом MR
+                if current_mr and should_send_reminder(mr_key, current_mr["created_at"]) and approvals < TARGET_APPROVALS:
+                    logger.info(f"MR !{iid} ({title}) старше 24 часов и имеет {approvals} аппрувов, отправка напоминания")
+                    mr_details = get_mr_details(iid, project_id)
+                    jira_key = extract_jira_key_from_text((mr_details.get("title", "") or "") + " " + (mr_details.get("description", "") or ""))
+                    
+                    jira_link = f"\nЗадача: {JIRA_URL}/browse/{jira_key}" if jira_key else ""
+                    mr_link = f"\nMR: {mr_details.get('web_url', '')}" if mr_details.get('web_url') else ""
+                    
+                    # Парсим дату создания с учетом разных форматов
+                    try:
+                        created_time = datetime.strptime(current_mr["created_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                    except ValueError:
+                        try:
+                            created_time = datetime.strptime(current_mr["created_at"], "%Y-%m-%dT%H:%M:%S.%f%z")
+                            # Конвертируем UTC время в локальное время
+                            if created_time.tzinfo is not None:
+                                logger.info(f"Оригинальная дата: {current_mr['created_at']}, спарсено: {created_time}")
+                                created_time = created_time.astimezone().replace(tzinfo=None)
+                                logger.info(f"После конвертации: {created_time}")
+                        except ValueError:
+                            logger.error(f"Неизвестный формат даты: {current_mr['created_at']}")
+                            continue
+                    
+                    now = datetime.now()
+                    logger.info(f"Текущее время: {now}, время создания: {created_time}")
+                    hours_old = int((now - created_time).total_seconds() / 3600)
+                    logger.info(f"Разница в часах: {hours_old}")
+                    
+                    message = f"⏰ MR \"{title}\" ждет уже {hours_old} часов! Можно сделать напоминание.{jira_link}{mr_link}"
+                    logger.info(f"Отправка напоминания о старом MR: {message}")
+                    send_pacha_message(message)
+                    mark_reminder_sent(mr_key)
 
             logger.info(f"Итерация завершена, следующая проверка через {CHECK_INTERVAL} секунд")
 
