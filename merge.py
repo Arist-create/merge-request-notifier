@@ -68,6 +68,18 @@ def get_mr_details(mr_iid):
         logger.error(f"Ошибка при получении деталей MR !{mr_iid}: {e}")
         raise
 
+def get_mr_comments(mr_iid):
+    try:
+        logger.info(f"Получение комментариев для MR !{mr_iid}")
+        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/123/merge_requests/{mr_iid}/notes?sort=desc", 
+                       headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
+        r.raise_for_status()
+        time.sleep(1)
+        return r.json()
+    except Exception as e:
+        logger.error(f"Ошибка при получении комментариев MR !{mr_iid}: {e}")
+        raise
+
 def extract_jira_key_from_text(text):
     try:
         match = re.search(r'\b[A-Z]+-\d+\b', text)
@@ -104,6 +116,7 @@ def update_jira_status(jira_key):
 
 def main():
     monitored, reported_mrs, shutdown_requested = {}, set(), False
+    tracked_comments = {}
 
     def signal_handler(signum, frame):
         nonlocal shutdown_requested
@@ -135,6 +148,7 @@ def main():
                 mr_key = f"{iid}"
                 if mr_key not in monitored:
                     monitored[mr_key] = 0
+                    tracked_comments[mr_key] = set()
                     new_mrs.append(f"!{iid}: {title}")
                     logger.info(f"Новый MR !{iid} ({title}) добавлен в мониторинг")
 
@@ -144,7 +158,7 @@ def main():
                 logger.info(f"Отправка уведомления о {len(new_mrs)} новых MR")
                 send_pacha_message(message)
 
-            logger.info(f"Проверка {len(monitored)} MR на аппрувы")
+            logger.info(f"Проверка {len(monitored)} MR на аппрувы и комментарии")
             for mr_key in list(monitored.keys()):
                 iid = int(mr_key)
                 approvals = get_approval_count(iid)
@@ -152,13 +166,49 @@ def main():
                 title = mr_details["title"]
                 print(f"MR !{iid} ({title}): {approvals} аппрувов")
 
+                # Проверка новых комментариев
+                try:
+                    comments = get_mr_comments(iid)
+                    current_comment_ids = {str(comment["id"]) for comment in comments}
+                    new_comment_ids = current_comment_ids - tracked_comments.get(mr_key, set())
+                    
+                    if new_comment_ids:
+                        for comment in comments:
+                            if str(comment["id"]) in new_comment_ids:
+                                # Пропускаем системные сообщения об аппрувах и другие системные уведомления
+                                body_lower = comment["body"].lower()
+                                is_system_message = (
+                                    comment.get("system", False) or
+                                    "approved" in body_lower or
+                                    "changed" in body_lower or
+                                    "requested changes" in body_lower or
+                                    "approved this merge request" in body_lower or
+                                    "unapproved" in body_lower or
+                                    comment["author"]["username"] in ["gitlab-bot", "project_123_bot"]
+                                )
+                                
+                                if is_system_message:
+                                    logger.info(f"Пропуск системного сообщения в MR !{iid}: {comment['body'][:100]}")
+                                    continue
+                                    
+                                author = comment["author"]["name"]
+                                body = comment["body"][:200] + "..." if len(comment["body"]) > 200 else comment["body"]
+                                message = f"💬 Новый комментарий в MR \"{title}\" от {author}:\n{body}"
+                                logger.info(f"Отправка уведомления о новом комментарии в MR !{iid}")
+                                send_pacha_message(message)
+                        
+                        tracked_comments[mr_key] = current_comment_ids
+                        logger.info(f"Обновлен список отслеживаемых комментариев для MR !{iid}: {len(current_comment_ids)}")
+                except Exception as e:
+                    logger.error(f"Ошибка при проверке комментариев для MR !{iid}: {e}")
+
                 if not any(m["iid"] == iid for m in open_mrs):
                     logger.info(f"MR !{iid} ({title}) больше не открыт, удален из мониторинга")
                     monitored.pop(mr_key, None)
+                    tracked_comments.pop(mr_key, None)
                     continue
 
                 if approvals >= TARGET_APPROVALS and mr_key not in reported_mrs:
-                    mr_url = f"https://gitlab.lamoda.tech/project-123/-/merge_requests/{iid}"
                     logger.info(f"MR !{iid} ({title}) достиг {approvals} аппрувов, обработка уведомления")
                     
                     mr_details = get_mr_details(iid)
@@ -175,7 +225,7 @@ def main():
                         logger.warning(f"Не найден ключ Jira для MR !{iid} ({title})")
                     
                     jira_info = f" (Jira {jira_key} обновлен)" if jira_updated else ""
-                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_info} {mr_url}"
+                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_info}"
                     logger.info(f"Отправка уведомления о достижении целевых аппрувов: {message}")
                     send_pacha_message(message)
                     reported_mrs.add(mr_key)
