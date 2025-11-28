@@ -92,23 +92,23 @@ def extract_jira_key_from_text(text):
 
 def update_jira_status(jira_key):
     try:
-        logger.info(f"Попытка обновления статуса задачи {jira_key} на 'Waiting Merge'")
+        logger.info(f"Попытка обновления статуса задачи {jira_key} на 'Need Testing'")
         headers = {"Authorization": f"Bearer {JIRA_TOKEN}", "Content-Type": "application/json"}
         transitions_resp = requests.get(f"{JIRA_URL}/rest/api/2/issue/{jira_key}/transitions", headers=headers, verify=False)
         transitions_resp.raise_for_status()
         transitions = transitions_resp.json().get("transitions", [])
         logger.info(f"Доступные переходы для задачи {jira_key}: {[t.get('to', {}).get('name') for t in transitions]}")
         
-        target_transition = next((t for t in transitions if "Waiting Merge" in t.get("to", {}).get("name", "")), None)
+        target_transition = next((t for t in transitions if "Need Testing" in t.get("to", {}).get("name", "")), None)
         if not target_transition:
-            logger.error(f"Не найден переход для статуса 'Waiting Merge' в задаче {jira_key}")
+            logger.error(f"Не найден переход для статуса 'Need Testing' в задаче {jira_key}")
             return False
         
         resp = requests.post(f"{JIRA_URL}/rest/api/2/issue/{jira_key}/transitions", 
                            json={"transition": {"id": target_transition["id"], "fields": {"customfield_27059": "."}}}, 
                            headers=headers, verify=False)
         resp.raise_for_status()
-        logger.info(f"Статус задачи {jira_key} успешно обновлен на 'Waiting Merge'")
+        logger.info(f"Статус задачи {jira_key} успешно обновлен на 'Need Testing'")
         return True
     except Exception as e:
         logger.error(f"Ошибка при обновлении статуса Jira {jira_key}: {e}")
@@ -225,7 +225,9 @@ def main():
                         logger.warning(f"Не найден ключ Jira для MR !{iid} ({title})")
                     
                     jira_info = f" (Jira {jira_key} обновлен)" if jira_updated else ""
-                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_info}"
+                    jira_link = f"\nЗадача: {JIRA_URL}/browse/{jira_key}" if jira_key else ""
+                    mr_link = f"\nMR: {mr_details.get('web_url', '')}"
+                    message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_info}{jira_link}{mr_link}"
                     logger.info(f"Отправка уведомления о достижении целевых аппрувов: {message}")
                     send_pacha_message(message)
                     reported_mrs.add(mr_key)
