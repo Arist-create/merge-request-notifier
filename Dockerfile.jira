@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY jira_done_checker.py .
+
+RUN pip install requests
+
+CMD ["python", "jira_done_checker.py"]

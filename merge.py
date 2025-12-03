@@ -41,6 +41,18 @@ def get_open_mrs():
         for mr in project_mrs:
             mr['_project_id'] = mr.get('project_id', 123)  # Fallback к 123 если нет project_id
         return project_mrs
+    except requests.exceptions.ConnectionError as e:
+        if "NameResolutionError" in str(e) or "Failed to resolve" in str(e):
+            logger.error(f"Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
+            logger.error(f"Детали ошибки: {e}")
+            try:
+                send_pacha_message("❌ Не удалось подключиться к GitLab: ошибка разрешения DNS. Программа завершена.")
+            except:
+                pass
+            sys.exit(1)
+        else:
+            logger.error(f"Ошибка подключения к GitLab: {e}")
+            raise
     except Exception as e:
         logger.error(f"Ошибка при получении списка MR: {e}")
         raise

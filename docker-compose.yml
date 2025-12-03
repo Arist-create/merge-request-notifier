@@ -1,9 +1,22 @@
 version: '3.8'
 
 services:
-  merge-monitor:
-    build: .
-    container_name: merge-monitor
+  gitlab-merge-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gitlab-merge-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  jira-done-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile.jira
+    container_name: jira-done-checker
     restart: unless-stopped
     env_file:
       - .env
