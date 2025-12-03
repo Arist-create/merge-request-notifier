@@ -96,6 +96,9 @@ def extract_jira_key_from_text(text):
 # Глобальный словарь для хранения напоминаний (в памяти)
 sent_reminders = {}
 
+def is_weekend(date):
+    return date.weekday() >= 5  # 5=суббота, 6=воскресенье
+
 def should_send_reminder(mr_key, created_at):
     try:
         now = datetime.now()
@@ -112,8 +115,19 @@ def should_send_reminder(mr_key, created_at):
                 logger.error(f"Неизвестный формат даты: {created_at}")
                 return False
         
-        # Проверяем что прошло больше 24 часов
-        if now - mr_created < timedelta(hours=24):
+        # Считаем только рабочие часы (исключая выходные)
+        work_hours_elapsed = 0
+        current_time = mr_created
+        
+        while current_time < now:
+            if not is_weekend(current_time):
+                work_hours_elapsed += 1
+            current_time += timedelta(hours=1)
+        
+        logger.info(f"MR {mr_key}: прошло {work_hours_elapsed} рабочих часов")
+        
+        # Проверяем что прошло больше 24 рабочих часов
+        if work_hours_elapsed < 24:
             return False
             
         # Проверяем было ли напоминание за последние 24 часа
@@ -273,12 +287,19 @@ def main():
                             logger.error(f"Неизвестный формат даты: {current_mr['created_at']}")
                             continue
                     
-                    now = datetime.now()
-                    logger.info(f"Текущее время: {now}, время создания: {created_time}")
-                    hours_old = int((now - created_time).total_seconds() / 3600)
-                    logger.info(f"Разница в часах: {hours_old}")
+                    # Считаем только рабочие часы (исключая выходные)
+                    work_hours_elapsed = 0
+                    current_time = created_time
                     
-                    message = f"⏰ MR \"{title}\" ждет уже {hours_old} часов! Можно сделать напоминание.{jira_link}{mr_link}"
+                    while current_time < now:
+                        if not is_weekend(current_time):
+                            work_hours_elapsed += 1
+                        current_time += timedelta(hours=1)
+                    
+                    logger.info(f"Текущее время: {now}, время создания: {created_time}")
+                    logger.info(f"Прошло {work_hours_elapsed} рабочих часов")
+                    
+                    message = f"⏰ MR \"{title}\" ждет уже {work_hours_elapsed} рабочих часов! Можно сделать напоминание.{jira_link}{mr_link}"
                     logger.info(f"Отправка напоминания о старом MR: {message}")
                     send_pacha_message(message)
                     mark_reminder_sent(mr_key)
