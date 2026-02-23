@@ -1,6 +1,13 @@
-import requests, time, urllib3, re, logging, signal, sys, os, json
+import logging
+import os
+import re
+import signal
+import sys
+import time
+from typing import Optional
+
+import requests
 from datetime import datetime, timedelta
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', 
                    handlers=[logging.FileHandler('merge_monitor.log'), logging.StreamHandler()])
@@ -10,18 +17,38 @@ GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
 TARGET_APPROVALS = 3
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
 PACCHA_BOT_TOKEN = os.getenv("PACCHA_BOT_TOKEN")
-PACHA_CHAT_ID = int(os.getenv("PACHA_CHAT_ID"))
+PACHA_CHAT_ID = os.getenv("PACHA_CHAT_ID")
 JIRA_TOKEN = os.getenv("JIRA_TOKEN")
 JIRA_URL = "https://jira.lamoda.ru"
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "15"))
 
 # ----------------------------
 
-def send_pacha_message(text):
+def validate_env() -> int:
+    required = {
+        "GITLAB_TOKEN": GITLAB_TOKEN,
+        "PACCHA_BOT_TOKEN": PACCHA_BOT_TOKEN,
+        "PACHA_CHAT_ID": PACHA_CHAT_ID,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
+
     try:
-        logger.info(f"Отправка сообщения в Pachca: {text}")
-        resp = requests.post("https://api.pachca.com/api/shared/v1/messages", 
-                           json={"message": {"entity_id": PACHA_CHAT_ID, "content": text}}, 
-                           headers={"Authorization": f"Bearer {PACCHA_BOT_TOKEN}", "Content-Type": "application/json"})
+        return int(PACHA_CHAT_ID)
+    except ValueError as exc:
+        raise RuntimeError("PACHA_CHAT_ID должен быть целым числом") from exc
+
+
+def send_pacha_message(text: str, chat_id: int):
+    try:
+        logger.info("Отправка сообщения в Pachca")
+        resp = requests.post(
+            "https://api.pachca.com/api/shared/v1/messages",
+            json={"message": {"entity_id": chat_id, "content": text}},
+            headers={"Authorization": f"Bearer {PACCHA_BOT_TOKEN}", "Content-Type": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         logger.info("Сообщение в Pachca успешно отправлено")
         return resp.json()
@@ -29,11 +56,14 @@ def send_pacha_message(text):
         logger.error(f"Ошибка при отправке сообщения в Pachca: {e}")
         raise
 
-def get_open_mrs():
+def get_open_mrs(chat_id: int):
     try:
         logger.info("Получение списка открытых MR")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/merge_requests?state=opened&author_username=aleksey.kuryshev", 
-                       headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
+        r = requests.get(
+            "https://gitlab.lamoda.tech/api/v4/merge_requests?state=opened&author_username=aleksey.kuryshev",
+            headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
+            timeout=REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         project_mrs = r.json()
         logger.info(f"Найдено {len(project_mrs)} MR")
@@ -46,8 +76,8 @@ def get_open_mrs():
             logger.error(f"Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
             logger.error(f"Детали ошибки: {e}")
             try:
-                send_pacha_message("❌ Не удалось подключиться к GitLab: ошибка разрешения DNS. Программа завершена.")
-            except:
+                send_pacha_message("❌ Не удалось подключиться к GitLab: ошибка разрешения DNS. Программа завершена.", chat_id)
+            except Exception:
                 pass
             sys.exit(1)
         else:
@@ -60,8 +90,11 @@ def get_open_mrs():
 def get_approval_count(mr_iid, project_id):
     try:
         logger.info(f"Получение количества аппрувов для MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/approvals", 
-                       headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
+        r = requests.get(
+            f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/approvals",
+            headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
+            timeout=REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         time.sleep(1)
         approvals = len(r.json().get("approved_by", []))
@@ -74,8 +107,11 @@ def get_approval_count(mr_iid, project_id):
 def get_mr_details(mr_iid, project_id):
     try:
         logger.info(f"Получение деталей MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}", 
-                       headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
+        r = requests.get(
+            f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}",
+            headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
+            timeout=REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         time.sleep(1)
         return r.json()
@@ -86,8 +122,11 @@ def get_mr_details(mr_iid, project_id):
 def get_mr_comments(mr_iid, project_id):
     try:
         logger.info(f"Получение комментариев для MR !{mr_iid}")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/notes?sort=desc", 
-                       headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
+        r = requests.get(
+            f"https://gitlab.lamoda.tech/api/v4/projects/{project_id}/merge_requests/{mr_iid}/notes?sort=desc",
+            headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
+            timeout=REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         time.sleep(1)
         return r.json()
@@ -95,11 +134,11 @@ def get_mr_comments(mr_iid, project_id):
         logger.error(f"Ошибка при получении комментариев MR !{mr_iid}: {e}")
         raise
 
-def extract_jira_key_from_text(text):
+def extract_jira_key_from_text(text: str) -> Optional[str]:
     try:
         match = re.search(r'\b[A-Z]+-\d+\b', text)
         jira_key = match.group(0) if match else None
-        logger.info(f"Найден ключ Jira: {jira_key} в тексте: {text[:100]}...")
+        logger.info(f"Найден ключ Jira: {jira_key}")
         return jira_key
     except Exception as e:
         logger.error(f"Ошибка при поиске ключа Jira в тексте: {e}")
@@ -158,6 +197,7 @@ def mark_reminder_sent(mr_key):
 
 
 def main():
+    chat_id = validate_env()
     monitored, reported_mrs, shutdown_requested = {}, set(), False
     tracked_comments = {}
     mr_project_ids = {}  # Словарь для хранения project_id по MR iid
@@ -168,7 +208,7 @@ def main():
             shutdown_requested = True
             logger.info("Получен сигнал завершения, начинаю graceful shutdown")
             try:
-                send_pacha_message("🛑 Мониторинг MR прекращен")
+                send_pacha_message("🛑 Мониторинг MR прекращен", chat_id)
                 logger.info("Отправлено уведомление о прекращении мониторинга")
             except Exception as e:
                 logger.error(f"Ошибка при отправке уведомления о завершении: {e}")
@@ -178,12 +218,12 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     logger.info("Запуск мониторинга MR...")
-    send_pacha_message("Запуск мониторинга MR...")
+    send_pacha_message("Запуск мониторинга MR...", chat_id)
 
     while True:
         try:
             logger.info("Начало новой итерации проверки")
-            open_mrs = get_open_mrs()
+            open_mrs = get_open_mrs(chat_id)
             new_mrs = []
 
             for mr in open_mrs:
@@ -205,7 +245,7 @@ def main():
                 new_mrs_text = "\n".join([f"🆕 {mr}" for mr in new_mrs])
                 message = f"Новые MR добавлены в мониторинг:\n{new_mrs_text}"
                 logger.info(f"Отправка уведомления о {len(new_mrs)} новых MR")
-                send_pacha_message(message)
+                send_pacha_message(message, chat_id)
 
             logger.info(f"Проверка {len(monitored)} MR на аппрувы и комментарии")
             for mr_key in list(monitored.keys()):
@@ -248,7 +288,7 @@ def main():
                                 body = comment["body"][:200] + "..." if len(comment["body"]) > 200 else comment["body"]
                                 message = f"💬 Новый комментарий в MR \"{title}\" от {author}:\n{body}"
                                 logger.info(f"Отправка уведомления о новом комментарии в MR !{iid}")
-                                send_pacha_message(message)
+                                send_pacha_message(message, chat_id)
                         
                         tracked_comments[mr_key] = current_comment_ids
                         logger.info(f"Обновлен список отслеживаемых комментариев для MR !{iid}: {len(current_comment_ids)}")
@@ -272,7 +312,7 @@ def main():
                     mr_link = f"\nMR: {mr_details.get('web_url', '')}" if mr_details.get('web_url') else ""
                     message = f"🎉 MR \"{title}\" получил {approvals} аппрува!{jira_link}{mr_link}"
                     logger.info(f"Отправка уведомления о достижении целевых аппрувов: {message}")
-                    send_pacha_message(message)
+                    send_pacha_message(message, chat_id)
                     reported_mrs.add(mr_key)
 
                 # Проверка на напоминание о старом MR
@@ -303,6 +343,7 @@ def main():
                     work_hours_elapsed = 0
                     current_time = created_time
                     
+                    now = datetime.now()
                     while current_time < now:
                         if not is_weekend(current_time):
                             work_hours_elapsed += 1
@@ -313,7 +354,7 @@ def main():
                     
                     message = f"⏰ MR \"{title}\" ждет уже {work_hours_elapsed} рабочих часов! Можно сделать напоминание.{jira_link}{mr_link}"
                     logger.info(f"Отправка напоминания о старом MR: {message}")
-                    send_pacha_message(message)
+                    send_pacha_message(message, chat_id)
                     mark_reminder_sent(mr_key)
 
             logger.info(f"Итерация завершена, следующая проверка через {CHECK_INTERVAL} секунд")
@@ -321,7 +362,7 @@ def main():
         except Exception as e:
             logger.error(f"Ошибка в основной петле мониторинга: {e}", exc_info=True)
             try:
-                send_pacha_message(f"Ошибка: {e}")
+                send_pacha_message(f"Ошибка: {e}", chat_id)
             except Exception as notify_error:
                 logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
 
