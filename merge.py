@@ -1,5 +1,14 @@
-import requests, time, urllib3, re, logging, signal, sys, os, json
+import logging
+import os
+import re
+import signal
+import sys
+import time
 from datetime import datetime, timedelta
+
+import requests
+import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', 
@@ -32,7 +41,7 @@ def send_pacha_message(text):
 def get_open_mrs():
     try:
         logger.info("Получение списка открытых MR")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/merge_requests?state=opened&author_username=aleksey.kuryshev", 
+        r = requests.get("https://gitlab.lamoda.tech/api/v4/merge_requests?state=opened&author_username=aleksey.kuryshev", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         project_mrs = r.json()
@@ -43,11 +52,11 @@ def get_open_mrs():
         return project_mrs
     except requests.exceptions.ConnectionError as e:
         if "NameResolutionError" in str(e) or "Failed to resolve" in str(e):
-            logger.error(f"Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
+            logger.error("Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
             logger.error(f"Детали ошибки: {e}")
             try:
                 send_pacha_message("❌ Не удалось подключиться к GitLab: ошибка разрешения DNS. Программа завершена.")
-            except:
+            except Exception:
                 pass
             sys.exit(1)
         else:
@@ -280,6 +289,7 @@ def main():
                     logger.info(f"MR !{iid} ({title}) старше 24 часов и имеет {approvals} аппрувов, отправка напоминания")
                     mr_details = get_mr_details(iid, project_id)
                     jira_key = extract_jira_key_from_text((mr_details.get("title", "") or "") + " " + (mr_details.get("description", "") or ""))
+                    now = datetime.now()
                     
                     jira_link = f"\nЗадача: {JIRA_URL}/browse/{jira_key}" if jira_key else ""
                     mr_link = f"\nMR: {mr_details.get('web_url', '')}" if mr_details.get('web_url') else ""

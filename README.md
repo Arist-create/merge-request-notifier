@@ -85,3 +85,12 @@ docker-compose down
 - `PACCHA_BOT_TOKEN`: Токен бота Pachca
 - `PACHA_CHAT_ID`: ID чата в Pachca
 - `JIRA_TOKEN`: Токен доступа к Jira API
+
+## Linters
+
+Установите dev-зависимости и запустите линтер:
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+```
