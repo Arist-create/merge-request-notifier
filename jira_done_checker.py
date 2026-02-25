@@ -1,5 +1,13 @@
-import requests, time, urllib3, re, logging, sys, os
+import logging
+import os
+import re
+import sys
+import time
 from datetime import datetime, timedelta
+
+import requests
+import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', 
@@ -28,7 +36,7 @@ def send_pacha_message(text):
 def get_merged_mrs():
     try:
         logger.info("Получение списка замерженных MR")
-        r = requests.get(f"https://gitlab.lamoda.tech/api/v4/merge_requests?state=merged&author_username=aleksey.kuryshev", 
+        r = requests.get("https://gitlab.lamoda.tech/api/v4/merge_requests?state=merged&author_username=aleksey.kuryshev", 
                        headers={"PRIVATE-TOKEN": GITLAB_TOKEN}, verify=False)
         r.raise_for_status()
         project_mrs = r.json()
@@ -40,11 +48,11 @@ def get_merged_mrs():
         return project_mrs
     except requests.exceptions.ConnectionError as e:
         if "NameResolutionError" in str(e) or "Failed to resolve" in str(e):
-            logger.error(f"Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
+            logger.error("Не удалось разрешить имя хоста gitlab.lamoda.tech. Завершение программы.")
             logger.error(f"Детали ошибки: {e}")
             try:
                 send_pacha_message("❌ Не удалось подключиться к GitLab: ошибка разрешения DNS. Программа завершена.")
-            except:
+            except Exception:
                 pass
             sys.exit(1)
         else:
@@ -199,7 +207,7 @@ def main():
                         message += f"Задача: {jira_link}\n"
                         if mr_link:
                             message += f"MR: {mr_link}\n"
-                        message += f"\nВозможно нужно перевести задачу в статус Done?"
+                        message += "\nВозможно нужно перевести задачу в статус Done?"
                         
                         logger.info(f"Отправка напоминания для задачи {jira_key}")
                         send_pacha_message(message)
