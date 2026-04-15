@@ -11,6 +11,7 @@ JIRA_TOKEN = os.getenv("JIRA_TOKEN")
 PACCHA_BOT_TOKEN = os.getenv("PACCHA_BOT_TOKEN")
 PACHA_CHAT_ID = int(os.getenv("PACHA_CHAT_ID"))
 JIRA_URL = "https://jira.lamoda.ru"
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
 
 def send_pacha_message(text):
     try:
@@ -157,7 +158,7 @@ def main():
                 logger.info(f"Проверка MR !{iid}: {title}")
                 
                 # Извлекаем ключ Jira из заголовка и описания
-                jira_key = extract_jira_key_from_text(title + " " + mr.get("description", ""))
+                jira_key = extract_jira_key_from_text(title + " " + (mr.get("description", "") or ""))
                 
                 if not jira_key:
                     logger.info(f"В MR !{iid} не найден ключ Jira, пропускаем")
@@ -223,6 +224,9 @@ def main():
                 send_pacha_message(f"❌ Ошибка в проверке задач Jira: {e}")
             except Exception as notify_error:
                 logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
+
+        logger.info(f"Итерация завершена, следующая проверка через {CHECK_INTERVAL} секунд")
+        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
