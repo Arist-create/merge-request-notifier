@@ -197,7 +197,13 @@ def main():
                 
                 if mr_key not in monitored:
                     monitored[mr_key] = 0
-                    tracked_comments[mr_key] = set()
+                    # Инициализируем отслеживаемые комментарии текущими, чтобы не слать уведомления о старых комментариях
+                    try:
+                        existing_comments = get_mr_comments(iid, project_id)
+                        tracked_comments[mr_key] = {str(c["id"]) for c in existing_comments}
+                    except Exception as e:
+                        logger.error(f"Ошибка при инициализации комментариев для MR !{iid}: {e}")
+                        tracked_comments[mr_key] = set()
                     new_mrs.append(f"!{iid}: {title}")
                     logger.info(f"Новый MR !{iid} ({title}) добавлен в мониторинг, project_id: {project_id}")
 
@@ -302,6 +308,7 @@ def main():
                     # Считаем только рабочие часы (исключая выходные)
                     work_hours_elapsed = 0
                     current_time = created_time
+                    now = datetime.now()
                     
                     while current_time < now:
                         if not is_weekend(current_time):
